@@ -1,0 +1,17 @@
+{
+   "format_version" : 1,
+   "header" : {
+      "description" : "Twitter: MCPE_Shaders\nYouTube: FenixGamerYT\nG+: ĐarkfeniX",
+      "name" : "Cloudy Shader v.12 - No GUI",
+      "uuid" : "c473a5ba-0240-451e-8384-8bc69740d392",
+      "version" : [ 12, 0, 0 ]
+   },
+   "modules" : [
+      {
+         "description" : "Twitter: MCPE_Shader\nYouTube: FenixGamerYT\nG+: ĐarkfeniX",
+         "type" : "resources",
+         "uuid" : "cadbdec0-a123-4068-bed2-c0aa41c5a4cf",
+         "version" : [ 12, 0, 0 ]
+      }
+   ]
+}

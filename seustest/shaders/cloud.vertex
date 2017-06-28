@@ -1,0 +1,63 @@
+// __multiversion__
+//#version 100 or #version 300 es
+//© T.R.X EVO Shader Mod V1.1
+
+#if __VERSION__ >= 300
+#define attribute in
+#define varying out
+#else
+
+
+#endif
+
+uniform MAT4 WORLDVIEWPROJ;
+uniform MAT4 WORLD;
+uniform float RENDER_DISTANCE;
+uniform vec4 FOG_COLOR;
+uniform vec4 CURRENT_COLOR;
+uniform highp float TIME;
+
+attribute mediump vec4 POSITION;
+attribute vec4 COLOR;
+
+varying vec4 color;
+
+const float fogNear = 5.0;
+const vec3 inverseLightDirection = vec3(0.62, 0.78, 0.0);
+const float AMBIENT = 1.0;
+float optimal = 0.7;
+float height = 15.0;
+mat3 extension = mat3(0.0, 0.96, 0.21, 0.0, 0.0, 0.0, -1.60, 0.0, 5.0);
+
+void main()
+{
+   
+POS4 worldPos = WORLD * POSITION;
+POS4 vxyzw = POSITION;
+POS4 vxyz = POSITION;
+vxyzw.y += height;
+POS4 pos = WORLDVIEWPROJ * vxyzw;
+gl_Position = pos;
+
+vec3 cpos = vxyz.xyz * optimal;
+cpos *= extension;
+
+float cloudWav = 0.0;
+cloudWav = sin((TIME * 0.1) + cpos.x * 4.0) + sin((TIME * 0.1) + cpos.z * 0.5) + sin((TIME * 0.1) + cpos.x * 5.9) + sin((TIME * 0.1) + cpos.z * 0.3) + sin((TIME * 0.1) + cpos.x * 0.85) + sin((TIME * 0.1) + cpos.z * 0.35) + sin((TIME * 0.1) + (cpos.x * 2.20) * (cpos.x * 4.1)) + sin((TIME * 0.1) + cpos.x * 0.4) + sin((TIME * 0.1) + cpos.x * 1.9) + sin((TIME * 0.1) + cpos.x * 7.3);
+
+vec4 day = vec4(9.0, 9.0, 9.0, CURRENT_COLOR.a);
+color = mix(day, FOG_COLOR, COLOR.r);
+
+if(FOG_COLOR.r < 0.15 && FOG_COLOR.g < 0.15){
+vec4 night = vec4(0.25, 0.6, 0.8, 0.0);
+color = mix(night, FOG_COLOR, COLOR.r);
+}
+
+float depth = length(worldPos.xyz) / 100.0;
+float fog = max(depth - fogNear, 0.0);
+
+color.a *= cloudWav;
+color.a *= 0.2 - fog;
+
+if(depth < 10.0 && depth > 5.0){color *= vec4(1.0, 1.0, 1.0, 0.035);}
+}

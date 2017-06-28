@@ -1,0 +1,291 @@
+// __multiversion__
+// This signals the loading code to prepend either #version 100 or #version 300 es as apropriate.
+
+// To use centroid sampling we need to have version 300 es shaders, which requires changing:
+// attribute to in
+// varying to out when in vertex shaders or in when in fragment shaders
+// defining an out vec4 FragColor and replacing uses of gl_FragColor with FragColor
+// texture2D to texture
+#if __VERSION__ >= 300
+	// version 300 code
+	#define varying in
+	#define texture2D texture
+	out vec4 FragColor;
+	#define gl_FragColor FragColor
+
+	#ifdef MSAA_FRAMEBUFFER_ENABLED
+		#define _centroid centroid
+	#else
+		#define _centroid
+	#endif
+
+	#ifndef NO_TEXTURE
+		_centroid in vec2 uv;
+	#endif
+#else
+	// version 100 code
+	#ifndef NO_TEXTURE
+		#if defined(TEXEL_AA) && defined(TEXEL_AA_FEATURE)
+			varying highp vec2 uv;
+		#else
+			varying vec2 uv;
+		#endif
+	#endif
+#endif
+
+#define BIAS_SHADOW_DAY 0.79
+#define BIAS_SHADOW_SUNSET 0.54
+#define BIAS_SHADOW_NIGHT 0.25
+
+#include "shaders/util.h"
+
+uniform sampler2D TEXTURE_0;
+uniform sampler2D TEXTURE_1;
+uniform vec2 FOG_CONTROL;
+uniform vec4 FOG_COLOR;
+uniform highp float TIME;
+
+#ifdef USE_MULTITEXTURE
+	uniform sampler2D TEXTURE_2;
+#endif
+
+varying vec4 light;
+varying vec4 fogColor;
+
+varying float new_fog;
+
+varying vec3 screen_pos;
+
+#ifdef USE_OVERLAY
+	varying vec4 overlayColor;
+#endif
+
+#ifdef TINTED_ALPHA_TEST
+varying float alphaTestMultiplier;
+#endif
+
+#if defined(USE_COLOR_MASK) || defined(ITEM_IN_HAND) || defined(COLOR_SECOND_TEXTURE)
+	varying vec4 changeColor;
+#endif
+
+#ifdef GLINT
+	varying vec2 layer1UV;
+	varying vec2 layer2UV;
+	varying vec4 tileLightColor;
+	varying vec4 glintColor;
+#endif
+
+float filmic_curve(float x) {
+float A = 0.22;
+float B = 0.3;
+float C = 0.15 * 1.0;
+float D = 0.4 * 1.77;
+float E = 0.01 * 1.0;
+float F = 0.1;
+return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F; 
+} 
+
+vec3 toneMap(vec3 clr) { 	
+float W = 1.3 / 1.0;
+
+float Luma = dot(clr, vec3(0.0));
+vec3 Chroma = clr - Luma;
+clr = (Chroma * vec3(2.2, 2.3, 2.4)) + Luma;
+clr = vec3(filmic_curve(clr.r), filmic_curve(clr.g), filmic_curve(clr.b)) / filmic_curve(W);
+
+return clr; 
+}
+
+vec3 day = vec3(1.0);
+vec3 night = vec3(0.6,0.73,1.0);
+vec3 sun = vec3(1.0,0.44,0.0);
+
+vec4 moonLight(vec4 light, float null){
+
+float amount = 1.05;
+float colorDesat = dot(light.rgb, vec3(0.25));
+
+light.rgb = mix(light.rgb, vec3(colorDesat) * night, amount * null);
+
+return light;}
+
+vec4 dayLight(vec4 light, float null){
+
+vec4 lum_day = light * vec4(vec3(day), 1.0);
+vec4 final_day = lum_day;
+
+return final_day;}
+
+vec4 sunLight(vec4 light, float null){
+
+light.rgb = mix(light.rgb,light.rgb*(sun*1.25),null);
+
+return light;}
+
+bool getNetherMask(vec4 ambient){
+if(ambient.r > ambient.b && ambient.r < 0.5 && ambient.b < 0.05){
+return true;
+} else {
+return false;}
+}
+
+bool getTheEndMask(vec4 ambient){
+if(ambient.r > ambient.g && ambient.b > ambient.g && ambient.r < 0.05 && ambient.b < 0.05 && ambient.g < 0.05){
+return true;
+} else {
+return false;}
+}
+
+vec4 glintBlend(vec4 dest, vec4 source) {
+	// glBlendFuncSeparate(GL_SRC_COLOR, GL_ONE, GL_ONE, GL_ZERO)
+	return vec4(source.rgb * source.rgb, source.a) + vec4(dest.rgb, 0.0);
+}
+
+#ifdef USE_EMISSIVE
+#define NEEDS_DISCARD(C)	(C.a + C.r + C.g + C.b == 0.0)
+#else
+#ifndef USE_COLOR_MASK
+#define NEEDS_DISCARD(C)	(C.a < 0.5)
+#else
+#define NEEDS_DISCARD(C)	(C.a <= 0.0)
+#endif
+#endif
+
+void main()
+{
+float setTime = FOG_COLOR.r;
+
+float timeNoon = setTime;
+float timeSunset = (0.5-abs(0.5-setTime*1.3));
+float timeMidnight = (1.0-setTime*0.9);
+float rain = (1.0-pow(FOG_CONTROL.y,5.0));
+
+float tNoon = timeNoon*timeNoon;
+float tSunset = timeSunset*timeSunset;
+float tMidnight = timeMidnight*timeMidnight;
+
+float nether = 0.0;
+float theend = 0.0;
+
+float shadow = 0.0;
+float bias = 0.0;
+
+bias = BIAS_SHADOW_DAY*tNoon;
+bias = BIAS_SHADOW_SUNSET*tSunset;
+bias = BIAS_SHADOW_NIGHT*tMidnight;
+
+vec3 tl = vec3(0.0, 0.0, 0.0);
+vec3 tlc = vec3(0.6, 0.3, 0.0);
+vec3 AS = vec3(0.0, 0.0, 0.0);
+vec3 ASc = vec3(0.0,0.0,1.0)*0.5;
+
+vec4 fog = FOG_COLOR;
+vec4 color = vec4(1.0);
+
+#ifndef NO_TEXTURE
+#if !defined(TEXEL_AA) || !defined(TEXEL_AA_FEATURE)
+color = texture2D( TEXTURE_0, uv );
+#else
+color = texture2D_AA(TEXTURE_0, uv);
+#endif
+
+#ifdef ALPHA_TEST
+	if(NEEDS_DISCARD(color))
+		discard;
+#endif // ALPHA_TEST
+
+#ifdef TINTED_ALPHA_TEST
+vec4 testColor = color;
+testColor.a *= alphaTestMultiplier;
+	if(NEEDS_DISCARD(testColor))
+		discard;
+#endif // TINTED_ALPHA_TEST
+#endif // NO_TEXTURE
+
+#ifdef USE_COLOR_MASK
+	color.rgb = mix(color.rgb, color.rgb*changeColor.rgb, color.a);
+	color.a *= changeColor.a;
+#endif
+
+#ifdef ITEM_IN_HAND
+	color.rgb = mix(color.rgb, color.rgb*changeColor.rgb, light.a);
+#endif
+
+#ifdef USE_MULTITEXTURE
+	vec4 tex1 = texture2D( TEXTURE_1, uv );
+	vec4 tex2 = texture2D( TEXTURE_2, uv );
+	color.rgb = mix(color.rgb, tex1.rgb, tex1.a);
+#ifdef COLOR_SECOND_TEXTURE
+	if (tex2.a > 0.0) {
+		color.rgb = tex2.rgb + (tex2.rgb * changeColor.rgb - tex2.rgb)*tex2.a;//lerp(tex2.rgb, tex2 * changeColor.rgb, tex2.a)
+	}
+#else
+	color.rgb = mix(color.rgb, tex2.rgb, tex2.a);
+#endif
+#endif
+
+#ifdef USE_OVERLAY
+	//use either the diffuse or the OVERLAY_COLOR
+	color.rgb = mix(color, overlayColor, overlayColor.a).rgb;
+#endif
+
+#ifdef USE_EMISSIVE
+	//make glowy stuff
+	color *= mix(vec4(1.0), light, color.a );
+#else
+	color *= light;
+#endif
+
+#ifdef GLINT
+	// Applies color mask to glint texture instead and blends with original color
+	vec4 layer1 = texture2D(TEXTURE_1, fract(layer1UV)).rgbr * glintColor;
+	vec4 layer2 = texture2D(TEXTURE_1, fract(layer2UV)).rgbr * glintColor;
+	vec4 glint = (layer1 + layer2) * tileLightColor;
+
+	color = glintBlend(color, glint);
+#endif
+
+float lum = (color.r + color.g + color.b) - light.r*3.0;
+vec3 nolight = (color.rgb) * lum;
+
+float noshd2 = (1.0-max(0.0,1.0*rain));
+
+if(getTheEndMask(fog)){
+tlc.rgb = vec3(0.5,0.0,1.5);
+ASc.rgb = color.rgb * vec3(5.0,0.0,10.0);
+color.rgb *= 0.25;
+theend = 1.0;
+}
+
+if(getNetherMask(fog)){
+nether = 1.0;
+color.rgb *= 0.3 + tl * 0.25;
+}
+
+if(nether==0.0){
+AS.rgb = ASc.rgb;
+}
+
+if(light.r<bias-0.005){shadow = 0.05;}
+if(light.r<bias-0.010){shadow = 0.10;}
+if(light.r<bias-0.015){shadow = 0.15;}
+if(light.r<bias-0.020){shadow = 0.20;}
+if(light.r<bias-0.025){shadow = 0.25;}
+if(light.r<bias-0.030){shadow = 0.30;}
+if(light.r<bias-0.035){shadow = 0.35;}
+if(light.r<bias-0.040){shadow = 0.40;}
+if(light.r<bias-0.045){shadow = 0.45;}
+if(light.r<bias-0.050){shadow = 0.50;}
+
+color.rgb = mix(color.rgb,fog.rgb/vec3(2.4),new_fog);
+color.rgb = mix(color.rgb, new_fog*AS, shadow*noshd2);
+color.rgb = toneMap(color.rgb);
+color.rgb *= vec3(max(150.0, 300.0 - max(0.0, (min(1.5, length(screen_pos.st*0.5)) - 0.3) * 3.7) * 110.0))*0.0035;
+
+if(theend==0.0){
+color = sunLight( dayLight( moonLight( color, tMidnight), tNoon), tSunset);
+}
+gl_FragColor = color;
+
+gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor.rgb, fogColor.a);
+}
